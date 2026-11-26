@@ -1,0 +1,62 @@
+name: Build LMC Recorder
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unzip source zip
+        run: |
+          Z=$(find . -maxdepth 2 -name '*.zip' -not -path './.git/*' | head -1)
+          if [ -n "$Z" ]; then echo "Unzipping $Z"; mkdir -p unzipped; unzip -q -o "$Z" -d unzipped; fi
+
+      - name: Find project folder
+        run: |
+          B=$(find . -name build.gradle -not -path "./.git/*" | head -1)
+          if [ -z "$B" ]; then echo "build.gradle NOT FOUND - upload the source zip to the repo"; ls -R | head -50; exit 1; fi
+          D=$(dirname "$B")
+          echo "Project dir: $D"
+          echo "PROJ=$D" >> $GITHUB_ENV
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: current
+
+      - name: Pick latest Loom
+        working-directory: ${{ env.PROJ }}
+        run: |
+          V=$(curl -fsSL https://maven.fabricmc.net/net/fabricmc/fabric-loom/maven-metadata.xml | grep -oP '(?<=<release>)[^<]+' || true)
+          echo "Loom from maven: '$V'"
+          if [ -n "$V" ]; then sed -i "s/^loom_version=.*/loom_version=$V/" gradle.properties; fi
+          cat gradle.properties
+
+      - name: Build
+        working-directory: ${{ env.PROJ }}
+        run: gradle build --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guirec-mod
+          path: ${{ env.PROJ }}/build/libs/*.jar
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          JAR=$(ls ${{ env.PROJ }}/build/libs/*.jar | grep -v -- '-sources' | grep -v -- '-dev' | head -1)
+          echo "Releasing: $JAR"
+          gh release delete latest -y --cleanup-tag || true
+          gh release create latest "$JAR" --title "LMC Recorder (no ffmpeg)" --notes "Auto-built from source."
